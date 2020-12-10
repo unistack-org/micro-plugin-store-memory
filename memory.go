@@ -3,7 +3,6 @@ package memory
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,17 +14,10 @@ import (
 
 // NewStore returns a memory store
 func NewStore(opts ...store.Option) store.Store {
-	s := &memoryStore{
-		options: store.Options{
-			Database: "micro",
-			Table:    "micro",
-		},
+	return &memoryStore{
+		opts:  store.NewOptions(opts...),
 		store: cache.New(cache.NoExpiration, 5*time.Minute),
 	}
-	for _, o := range opts {
-		o(&s.options)
-	}
-	return s
 }
 
 func (m *memoryStore) Connect(ctx context.Context) error {
@@ -38,16 +30,8 @@ func (m *memoryStore) Disconnect(ctx context.Context) error {
 }
 
 type memoryStore struct {
-	options store.Options
-
+	opts  store.Options
 	store *cache.Cache
-}
-
-type storeRecord struct {
-	key       string
-	value     []byte
-	metadata  map[string]interface{}
-	expiresAt time.Time
 }
 
 func (m *memoryStore) key(prefix, key string) string {
@@ -56,74 +40,43 @@ func (m *memoryStore) key(prefix, key string) string {
 
 func (m *memoryStore) prefix(database, table string) string {
 	if len(database) == 0 {
-		database = m.options.Database
+		database = m.opts.Database
 	}
 	if len(table) == 0 {
-		table = m.options.Table
+		table = m.opts.Table
 	}
 	return filepath.Join(database, table)
 }
 
-func (m *memoryStore) get(prefix, key string) (*store.Record, error) {
+func (m *memoryStore) exists(prefix, key string) error {
 	key = m.key(prefix, key)
 
-	var storedRecord *storeRecord
-	r, found := m.store.Get(key)
+	_, found := m.store.Get(key)
 	if !found {
-		return nil, store.ErrNotFound
+		return store.ErrNotFound
 	}
 
-	storedRecord, ok := r.(*storeRecord)
-	if !ok {
-		return nil, errors.New("Retrieved a non *storeRecord from the cache")
-	}
-
-	// Copy the record on the way out
-	newRecord := &store.Record{}
-	newRecord.Key = strings.TrimPrefix(storedRecord.key, prefix+"/")
-	newRecord.Value = make([]byte, len(storedRecord.value))
-	newRecord.Metadata = make(map[string]interface{})
-
-	// copy the value into the new record
-	copy(newRecord.Value, storedRecord.value)
-
-	// check if we need to set the expiry
-	if !storedRecord.expiresAt.IsZero() {
-		newRecord.Expiry = time.Until(storedRecord.expiresAt)
-	}
-
-	// copy in the metadata
-	for k, v := range storedRecord.metadata {
-		newRecord.Metadata[k] = v
-	}
-
-	return newRecord, nil
+	return nil
 }
 
-func (m *memoryStore) set(prefix string, r *store.Record) {
-	key := m.key(prefix, r.Key)
+func (m *memoryStore) get(prefix, key string, val interface{}) error {
+	key = m.key(prefix, key)
 
-	// copy the incoming record and then
-	// convert the expiry in to a hard timestamp
-	i := &storeRecord{}
-	i.key = r.Key
-	i.value = make([]byte, len(r.Value))
-	i.metadata = make(map[string]interface{})
-
-	// copy the the value
-	copy(i.value, r.Value)
-
-	// set the expiry
-	if r.Expiry != 0 {
-		i.expiresAt = time.Now().Add(r.Expiry)
+	r, found := m.store.Get(key)
+	if !found {
+		return store.ErrNotFound
 	}
 
-	// set the metadata
-	for k, v := range r.Metadata {
-		i.metadata[k] = v
+	buf, ok := r.([]byte)
+	if !ok {
+		return store.ErrNotFound
 	}
 
-	m.store.Set(key, i, r.Expiry)
+	if err := m.opts.Codec.Unmarshal(buf, val); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (m *memoryStore) delete(prefix, key string) {
@@ -166,7 +119,7 @@ func (m *memoryStore) list(prefix string, limit, offset uint) []string {
 
 func (m *memoryStore) Init(opts ...store.Option) error {
 	for _, o := range opts {
-		o(&m.options)
+		o(&m.opts)
 	}
 	return nil
 }
@@ -175,91 +128,35 @@ func (m *memoryStore) String() string {
 	return "memory"
 }
 
-func (m *memoryStore) Read(ctx context.Context, key string, opts ...store.ReadOption) ([]*store.Record, error) {
-	readOpts := store.ReadOptions{}
-	for _, o := range opts {
-		o(&readOpts)
-	}
-
-	prefix := m.prefix(readOpts.Database, readOpts.Table)
-
-	var keys []string
-
-	// Handle Prefix / suffix
-	if readOpts.Prefix || readOpts.Suffix {
-		k := m.list(prefix, readOpts.Limit, readOpts.Offset)
-
-		for _, kk := range k {
-			if readOpts.Prefix && !strings.HasPrefix(kk, key) {
-				continue
-			}
-
-			if readOpts.Suffix && !strings.HasSuffix(kk, key) {
-				continue
-			}
-
-			keys = append(keys, kk)
-		}
-	} else {
-		keys = []string{key}
-	}
-
-	var results []*store.Record
-
-	for _, k := range keys {
-		r, err := m.get(prefix, k)
-		if err != nil {
-			return results, err
-		}
-		results = append(results, r)
-	}
-
-	return results, nil
+func (m *memoryStore) Exists(ctx context.Context, key string) error {
+	prefix := m.prefix(m.opts.Database, m.opts.Table)
+	return m.exists(prefix, key)
 }
 
-func (m *memoryStore) Write(ctx context.Context, r *store.Record, opts ...store.WriteOption) error {
-	writeOpts := store.WriteOptions{}
-	for _, o := range opts {
-		o(&writeOpts)
-	}
+func (m *memoryStore) Read(ctx context.Context, key string, val interface{}, opts ...store.ReadOption) error {
+	readOpts := store.NewReadOptions(opts...)
+	prefix := m.prefix(readOpts.Database, readOpts.Table)
+	return m.get(prefix, key, val)
+}
+
+func (m *memoryStore) Write(ctx context.Context, key string, val interface{}, opts ...store.WriteOption) error {
+	writeOpts := store.NewWriteOptions(opts...)
 
 	prefix := m.prefix(writeOpts.Database, writeOpts.Table)
 
-	if len(opts) > 0 {
-		// Copy the record before applying options, or the incoming record will be mutated
-		newRecord := store.Record{}
-		newRecord.Key = r.Key
-		newRecord.Value = make([]byte, len(r.Value))
-		newRecord.Metadata = make(map[string]interface{})
-		copy(newRecord.Value, r.Value)
-		newRecord.Expiry = r.Expiry
+	key = m.key(prefix, key)
 
-		if !writeOpts.Expiry.IsZero() {
-			newRecord.Expiry = time.Until(writeOpts.Expiry)
-		}
-		if writeOpts.TTL != 0 {
-			newRecord.Expiry = writeOpts.TTL
-		}
-
-		for k, v := range r.Metadata {
-			newRecord.Metadata[k] = v
-		}
-
-		m.set(prefix, &newRecord)
-		return nil
+	buf, err := m.opts.Codec.Marshal(val)
+	if err != nil {
+		return err
 	}
 
-	// set
-	m.set(prefix, r)
-
+	m.store.Set(key, buf, writeOpts.TTL)
 	return nil
 }
 
 func (m *memoryStore) Delete(ctx context.Context, key string, opts ...store.DeleteOption) error {
-	deleteOptions := store.DeleteOptions{}
-	for _, o := range opts {
-		o(&deleteOptions)
-	}
+	deleteOptions := store.NewDeleteOptions(opts...)
 
 	prefix := m.prefix(deleteOptions.Database, deleteOptions.Table)
 	m.delete(prefix, key)
@@ -267,15 +164,11 @@ func (m *memoryStore) Delete(ctx context.Context, key string, opts ...store.Dele
 }
 
 func (m *memoryStore) Options() store.Options {
-	return m.options
+	return m.opts
 }
 
 func (m *memoryStore) List(ctx context.Context, opts ...store.ListOption) ([]string, error) {
-	listOptions := store.ListOptions{}
-
-	for _, o := range opts {
-		o(&listOptions)
-	}
+	listOptions := store.NewListOptions(opts...)
 
 	prefix := m.prefix(listOptions.Database, listOptions.Table)
 	keys := m.list(prefix, listOptions.Limit, listOptions.Offset)
