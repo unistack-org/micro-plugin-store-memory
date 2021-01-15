@@ -6,8 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kr/pretty"
-	memory "github.com/unistack-org/micro-store-memory"
+	memory "github.com/unistack-org/micro-store-memory/v3"
 	"github.com/unistack-org/micro/v3/store"
 )
 
@@ -46,7 +45,7 @@ func TestMemoryNamespacePrefix(t *testing.T) {
 func basictest(s store.Store, t *testing.T) {
 	ctx := context.Background()
 	if len(os.Getenv("IN_TRAVIS_CI")) == 0 {
-		t.Logf("Testing store %s, with options %# v\n", s.String(), pretty.Formatter(s.Options()))
+		t.Logf("Testing store %s, with options %#+v\n", s.String(), s.Options())
 	}
 	// Read and Write an expiring Record
 	if err := s.Write(ctx, "Hello", "World", store.WriteTTL(time.Millisecond*100)); err != nil {
