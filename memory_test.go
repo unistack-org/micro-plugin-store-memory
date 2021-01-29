@@ -60,7 +60,7 @@ func basictest(s store.Store, t *testing.T) {
 		}
 	}
 	time.Sleep(time.Millisecond * 200)
-	if err := s.Read(ctx, "Hello", val); err != store.ErrNotFound {
+	if err := s.Read(ctx, "Hello", &val); err != store.ErrNotFound {
 		t.Errorf("Expected %# v, got %# v", store.ErrNotFound, err)
 	}
 

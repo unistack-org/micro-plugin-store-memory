@@ -4,5 +4,5 @@ go 1.15
 
 require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/unistack-org/micro/v3 v3.2.4
+	github.com/unistack-org/micro/v3 v3.2.5
 )
