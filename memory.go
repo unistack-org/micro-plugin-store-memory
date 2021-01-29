@@ -128,6 +128,10 @@ func (m *memoryStore) String() string {
 	return "memory"
 }
 
+func (m *memoryStore) Name() string {
+	return m.opts.Name
+}
+
 func (m *memoryStore) Exists(ctx context.Context, key string, opts ...store.ExistsOption) error {
 	prefix := m.prefix(m.opts.Database, m.opts.Table)
 	return m.exists(prefix, key)
